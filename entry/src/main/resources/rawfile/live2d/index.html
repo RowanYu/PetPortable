@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>Live2D</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; width: 100%; height: 100%; }
+  #stage { display: block; width: 100%; height: 100%; }
+  #status {
+    position: fixed; top: 4px; left: 4px; right: 4px;
+    padding: 6px 10px; font-size: 12px; color: #081E2A;
+    background: rgba(255,255,255,0.85); border-radius: 8px;
+    pointer-events: none; z-index: 10; word-break: break-all;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  #status.error { background: rgba(255, 200, 200, 0.95); color: #900; }
+  #status.ok { background: rgba(200, 255, 200, 0.85); color: #060; }
+</style>
+</head>
+<body>
+<div id="status">正在初始化...</div>
+<canvas id="stage"></canvas>
+<script>
+(function () {
+  var statusEl = document.getElementById('status');
+  function setStatus(text, kind) {
+    statusEl.textContent = text;
+    statusEl.className = kind || '';
+  }
+  window.__live2dSetStatus = setStatus;
+
+  // ============== 加载库 ==============
+  setStatus('加载 Cubism Core ...');
+  function loadScript(src, ok, err) {
+    var s = document.createElement('script');
+    s.src = src;
+    s.onload = ok;
+    s.onerror = function () { err(new Error('load script failed: ' + src)); };
+    document.head.appendChild(s);
+  }
+  function loadScriptsSeq(urls, done, fail) {
+    var i = 0;
+    function next() {
+      if (i >= urls.length) { done(); return; }
+      loadScript(urls[i], function () { i++; next(); }, fail);
+    }
+    next();
+  }
+
+  loadScriptsSeq([
+    'libs/live2dcubismcore.min.js',
+    'libs/pixi.min.js',
+    'libs/cubism4.min.js'
+  ], function () {
+    try { window.PIXI = PIXI; } catch (e) {}
+    if (typeof PIXI === 'undefined' || !PIXI.live2d) {
+      setStatus('PIXI/pixi-live2d-display 未就绪', 'error');
+      return;
+    }
+    setStatus('库已就绪，等待 initLive2D...', 'ok');
+    window.__libsReady = true;
+  }, function (e) {
+    setStatus('库加载失败: ' + e.message, 'error');
+  });
+
+  // ============== Live2D 主逻辑 ==============
+  var app = null;
+  var model = null;
+  var currentModelName = null;
+  var pendingAction = 'idle';
+  var ready = false;
+  var MODEL_BASE = 'petlive2d://local/live2d/models/';
+  var MAX_RENDER_RESOLUTION = 3;
+
+  var ACTION_TO_GROUP = {
+    idle:    ['Idle', ''],
+    sleep:   ['Idle'],
+    hot:     ['Idle'],
+    wet:     ['Idle'],
+    eat:     ['', 'Tap'],
+    chat:    ['Tap', ''],
+    play:    ['Tap', ''],
+    train:   ['Tap', ''],
+    bath:    ['Tap', ''],
+    interact:['Tap', '']
+  };
+
+  function fitModel() {
+    if (!model || !app) return;
+    // renderer.width/height 是物理像素；模型坐标使用逻辑像素。
+    var rendererW = app.renderer.screen.width;
+    var rendererH = app.renderer.screen.height;
+    var modelW = model.width;
+    var modelH = model.height;
+    if (modelW <= 0 || modelH <= 0) return;
+    var scale = Math.min(rendererW / modelW, rendererH / modelH) * 0.92;
+    model.scale.set(scale);
+    model.x = (rendererW - modelW * scale) / 2;
+    model.y = (rendererH - modelH * scale) / 2;
+  }
+
+  function getRenderResolution() {
+    var deviceResolution = Number(window.devicePixelRatio) || 1;
+    return Math.max(1, Math.min(deviceResolution, MAX_RENDER_RESOLUTION));
+  }
+
+  window.addEventListener('resize', function () {
+    if (!app) return;
+    var w = window.innerWidth || 300;
+    var h = window.innerHeight || 300;
+    app.renderer.resize(w, h);
+    fitModel();
+  });
+
+  window.initLive2D = function (modelName) {
+    if (!window.__libsReady) {
+      setStatus('库未就绪，延迟加载 ' + modelName, '');
+      var retryCount = 0;
+      var retryTimer = setInterval(function () {
+        if (window.__libsReady) {
+          clearInterval(retryTimer);
+          window.initLive2D(modelName);
+        } else if (retryCount++ > 20) {
+          clearInterval(retryTimer);
+          setStatus('库加载超时', 'error');
+        }
+      }, 200);
+      return Promise.resolve();
+    }
+    if (currentModelName === modelName && model) {
+      return Promise.resolve();
+    }
+    currentModelName = modelName;
+    ready = false;
+
+    var canvas = document.getElementById('stage');
+    if (app) {
+      try { app.destroy(true); } catch (e) {}
+      app = null; model = null;
+    }
+
+    var w = window.innerWidth || 300;
+    var h = window.innerHeight || 300;
+    var resolution = getRenderResolution();
+    setStatus('创建 PIXI Application (' + w + 'x' + h + ' @' + resolution + 'x) ...');
+
+    try {
+      app = new PIXI.Application({
+        view: canvas,
+        backgroundAlpha: 0,
+        antialias: true,
+        autoDensity: true,
+        autoStart: true,
+        width: w,
+        height: h,
+        resolution: resolution,
+        transparent: true
+      });
+      console.log(
+        'PIXI renderer ready:',
+        w + 'x' + h,
+        'resolution=' + resolution,
+        'canvas=' + canvas.width + 'x' + canvas.height
+      );
+    } catch (e) {
+      setStatus('PIXI Application 创建失败: ' + e.message, 'error');
+      return Promise.reject(e);
+    }
+
+    var modelUrl = MODEL_BASE + modelName + '/' + modelName + '.model3.json';
+    setStatus('加载模型: ' + modelUrl);
+
+    return PIXI.live2d.Live2DModel.from(modelUrl, { autoInteract: false })
+      .then(function (m) {
+        model = m;
+        app.stage.addChild(model);
+        fitModel();
+        ready = true;
+        setStatus('模型已就绪: ' + modelName, 'ok');
+        setTimeout(function () { statusEl.style.display = 'none'; }, 3000);
+        if (pendingAction) {
+          window.setLive2DAction(pendingAction);
+        }
+      })
+      .catch(function (err) {
+        var msg = (err && err.message) ? err.message : String(err);
+        if (err && err.url) {
+          msg += '；资源: ' + err.url;
+        }
+        if (err && typeof err.status === 'number') {
+          msg += '；状态码: ' + err.status;
+        }
+        setStatus('模型加载失败: ' + msg, 'error');
+        console.error('Live2D init failed:', err);
+      });
+  };
+
+  window.setLive2DAction = function (action) {
+    pendingAction = action;
+    if (!ready || !model) return;
+    var groups = ACTION_TO_GROUP[action] || ['Idle', ''];
+    tryStartMotion(groups, 0);
+  };
+
+  function tryStartMotion(groups, idx) {
+    if (idx >= groups.length) return;
+    var group = groups[idx];
+    if (!model || !model.internalModel || !model.internalModel.motionManager) return;
+    var mgr = model.internalModel.motionManager;
+    var defs = mgr.definitions ? mgr.definitions[group] : null;
+    if (defs && defs.length > 0) {
+      try { model.motion(group, 0, 3); } catch (e) { console.warn('motion failed:', e); }
+    } else {
+      tryStartMotion(groups, idx + 1);
+    }
+  }
+
+  window.setLive2DExpression = function (idx) {
+    if (!ready || !model) return;
+    try {
+      var em = model.internalModel && model.internalModel.motionManager && model.internalModel.motionManager.expressionManager;
+      if (em) { em.setExpression(idx); }
+    } catch (e) {}
+  };
+
+  window.destroyLive2D = function () {
+    if (model) { try { model.destroy(); } catch (e) {} model = null; }
+    if (app) { try { app.destroy(true); } catch (e) {} app = null; }
+    ready = false; currentModelName = null;
+  };
+
+  window.addEventListener('error', function (e) {
+    setStatus('JS 错误: ' + (e.message || 'unknown'), 'error');
+  });
+
+  console.log('Live2D page ready');
+})();
+</script>
+</body>
+</html>
