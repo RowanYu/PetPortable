@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "宠物伙伴"
+    },
+    {
+      "name": "reason_internet",
+      "value": "用于通知 PC 端切换宠物视频推流"
+    }
+  ]
+}

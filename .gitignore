@@ -1,0 +1,44 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.tools/
+*.zip
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+
+# IDE configs
+/.claude
+/.agents
+/.codebuddy
+/.trae
+/.figma
+/.vscode
+
+# Documentation & assets (too large for repo)
+/docs
+/tools
+
+# Build artifacts
+verify_build*.ps1
+hex.txt
+oh-package-lock.json5
+
+# Large media resources (keep configs, exclude binaries)
+/entry/src/main/resources/base/media/
+/entry/src/main/resources/rawfile/
+/entry/src/main/resources/dark/
+
+# Test code
+/entry/src/test/
+/entry/src/ohosTest/
+
+# OS files
+.DS_Store
+Thumbs.db
