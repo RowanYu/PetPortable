@@ -114,6 +114,16 @@ export class PetStore {
   }
 
   /**
+   * 用恢复出的列表整体替换当前列表，并设置当前选中索引（持久化恢复专用）
+   */
+  static setList(list: PetModel[], index: number): void {
+    AppStorage.setOrCreate(PetStore.KEY_PET_LIST, list);
+    const safeIndex: number = index >= 0 && index < list.length ? index : 0;
+    AppStorage.setOrCreate(PetStore.KEY_CURRENT_INDEX, safeIndex);
+    AppStorage.setOrCreate(PetStore.KEY_CURRENT_PET, list[safeIndex]);
+  }
+
+  /**
    * 列表是否为空（用于切换至空态视图）
    */
   static isEmpty(): boolean {
