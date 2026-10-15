@@ -210,7 +210,16 @@ struct ChatPage {
   }
 
   private onHoldStart(): void {
-    if (this.isProcessing || this.isHolding || this.isContinuousMode) {
+    if (this.isContinuousMode) {
+      return;
+    }
+    // 头像唤醒监听中直接按住：先安全取消 once 会话，避免录音会话双开
+    if (this.isListening) {
+      this.speechService.stopListening();
+      this.isListening = false;
+      this.listeningText = '';
+    }
+    if (this.isProcessing || this.isHolding) {
       return;
     }
     this.isHolding = true;
@@ -231,6 +240,10 @@ struct ChatPage {
     if (!granted) {
       promptAction.showToast({ message: '需要麦克风权限才能语音对话' });
       this.resetHoldState();
+      return;
+    }
+    // await 期间用户可能已松开：复查按压状态，防幽灵录音
+    if (!this.isHolding || this.holdSettled) {
       return;
     }
     const petKey: string = PetPersistenceService.resolvePetKey(this.pet);
@@ -269,12 +282,20 @@ struct ChatPage {
     };
     const started: boolean = await this.speechService.startListening(petKey, 'once', callbacks);
     if (!started) {
-      // 端侧识别不可用：降级为原模拟识别兜底（不崩溃）
+      // 端侧识别不可用：降级为原模拟识别兜底（不崩溃）；已松开则不再进入模拟流程
+      if (!this.isHolding || this.holdSettled) {
+        return;
+      }
       this.simulatedHold = true;
       this.voiceService.beginPress((stage: VoiceStage, detail: string): void => {
         this.stage = stage;
         this.stageDetail = detail;
       });
+      return;
+    }
+    // 录音已真正开启但用户已松开：立即停掉，防幽灵录音
+    if (!this.isHolding || this.holdSettled) {
+      this.speechService.stopListening();
     }
   }
 
@@ -384,24 +405,34 @@ struct ChatPage {
       onError: (message: string) => {
         promptAction.showToast({ message: message });
         this.exitContinuousChat();
+      },
+      onSessionStarted: () => {
+        // 首轮聆听真正启动成功才亮「已开启」态；设备不支持时由 onError 流接管
+        if (this.isContinuousMode) {
+          return;
+        }
+        this.isContinuousMode = true;
+        this.holdButtonText = '点击退出连续聊天';
+        this.stage = '录音中';
+        this.stageDetail = '面对面聊天中，说完自动回复';
+        promptAction.showToast({ message: '连续聊天已开启，说完自动回复' });
       }
     };
     const started: boolean = await PetContinuousChatService.getInstance()
       .startSession(this.pet, petKey, callbacks, context);
     if (!started) {
-      promptAction.showToast({ message: '当前设备不支持连续聊天' });
-      return;
+      // 双开竞态：恢复按住态
+      this.resetHoldState();
+      promptAction.showToast({ message: '当前已有语音会话进行中' });
     }
-    this.isContinuousMode = true;
-    this.holdButtonText = '点击退出连续聊天';
-    this.stage = '录音中';
-    this.stageDetail = '面对面聊天中，说完自动回复';
-    promptAction.showToast({ message: '连续聊天已开启，说完自动回复' });
   }
 
   /** 退出连续聊天（幂等）：停会话、清聆听态、按钮复原 */
   private exitContinuousChat(): void {
     PetContinuousChatService.getInstance().stopSession();
+    if (!this.isContinuousMode) {
+      return;
+    }
     this.isContinuousMode = false;
     this.listeningText = '';
     this.holdButtonText = '按住说话';
@@ -415,6 +446,12 @@ struct ChatPage {
       PetContinuousChatService.getInstance().stopSession();
       this.isContinuousMode = false;
     }
+    if (this.isListening) {
+      this.speechService.stopListening();
+      this.isListening = false;
+      this.listeningText = '';
+    }
+    this.clearHoldFinalTimer();
   }
 
   @Builder

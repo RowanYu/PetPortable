@@ -13,6 +13,8 @@ export interface ContinuousTurnCallbacks {
   onTurnReply: (reply: PetAiReply) => Promise<void>;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
+  /** 会话首轮聆听真正启动成功后回调一次（设备不支持时不会触发，页面据此再亮「已开启」态） */
+  onSessionStarted?: () => void;
 }
 
 /** 语音端口最小接口：生产接 PetSpeechRecognizerService，测试注入 fake */
@@ -31,6 +33,7 @@ export class PetContinuousChatService {
   private running: boolean = false;
   private generation: number = 0;
   private lastPort: SpeechPort | undefined = undefined;
+  private sessionStartedNotified: boolean = false;
 
   private constructor() {
   }
@@ -58,6 +61,7 @@ export class PetContinuousChatService {
     self.running = true;
     self.generation += 1;
     self.lastPort = port;
+    self.sessionStartedNotified = false;
     self.loopTurn(pet, petKey, cb, context, port, transport);
     return true;
   }
@@ -106,7 +110,25 @@ export class PetContinuousChatService {
         }
       }
     };
-    void port.startListening(petKey, 'once', sessionCb);
+    void port.startListening(petKey, 'once', sessionCb).then((started: boolean) => {
+      if (!started) {
+        // 启动失败（设备不支持/被占用）：终止会话并明确上报，避免无回调死挂
+        if (!self.running || generation !== self.generation) {
+          return;
+        }
+        self.running = false;
+        self.generation += 1;
+        self.lastPort = undefined;
+        cb.onError('语音不可用，无法连续聊天');
+        return;
+      }
+      if (generation === self.generation && !self.sessionStartedNotified) {
+        self.sessionStartedNotified = true;
+        if (cb.onSessionStarted) {
+          cb.onSessionStarted();
+        }
+      }
+    });
   }
 
   private async onTurnFinal(pet: PetModel, petKey: string, cb: ContinuousTurnCallbacks,

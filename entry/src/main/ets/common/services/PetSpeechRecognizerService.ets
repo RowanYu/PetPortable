@@ -17,6 +17,8 @@ const TAG: string = 'PetSpeech';
 const SESSION_ID: string = 'pet_session';
 const SAMPLE_RATE: number = 16000;
 const MAX_ONCE_DURATION_MS: number = 15000;
+/** stopListening 后延迟释放窗口：等待 finish 的最终结果回调送达 */
+const STOP_RELEASE_DELAY_MS: number = 600;
 
 /**
  * 端侧语音识别服务：AudioCapturer(16k PCM) → CoreSpeechKit 引擎 → partial/final 回调。
@@ -112,20 +114,54 @@ export class PetSpeechRecognizerService {
     }
   }
 
-  /** 停止监听（幂等，重复调用安全） */
+  /**
+   * 停止监听（幂等，重复调用安全）。
+   * finish 后延迟释放引擎：给最终识别结果（onFinal）留出送达窗口；
+   * 释放引用立即置空，期间的再次 startListening 会创建全新会话，互不干扰。
+   */
   stopListening(): void {
     const self: PetSpeechRecognizerService = PetSpeechRecognizerService.getInstance();
     if (!self.listening) {
       return;
     }
+    self.listening = false;
+    if (self.timeoutTimer !== -1) {
+      clearTimeout(self.timeoutTimer);
+      self.timeoutTimer = -1;
+    }
+    const engine: speechRecognizer.SpeechRecognitionEngine | undefined = self.engine;
+    const capturer: audio.AudioCapturer | undefined = self.capturer;
+    self.engine = undefined;
+    self.capturer = undefined;
     try {
-      if (self.engine) {
-        self.engine.finish(SESSION_ID);
+      if (engine) {
+        engine.finish(SESSION_ID);
       }
     } catch (e) {
       console.warn(`${TAG} finish failed: ${(e as BusinessError).message}`);
     }
-    self.cleanup();
+    self.scheduleRelease(engine, capturer, STOP_RELEASE_DELAY_MS);
+  }
+
+  /** 延迟释放引擎与采集器，等待 finish 触发的最终结果回调送达 */
+  private scheduleRelease(engine: speechRecognizer.SpeechRecognitionEngine | undefined,
+    capturer: audio.AudioCapturer | undefined, delayMs: number): void {
+    setTimeout(() => {
+      if (capturer) {
+        capturer.stop().then(() => {
+          return capturer.release();
+        }).catch((e: BusinessError) => {
+          console.warn(`${TAG} capturer release failed: ${e.message}`);
+        });
+      }
+      if (engine) {
+        try {
+          engine.shutdown();
+        } catch (e) {
+          console.warn(`${TAG} engine shutdown failed: ${(e as BusinessError).message}`);
+        }
+      }
+    }, delayMs);
   }
 
   private async ensureEngine(cb: SpeechSessionCallbacks): Promise<boolean> {

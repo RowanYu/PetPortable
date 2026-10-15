@@ -10,12 +10,13 @@ import { AiChatMessage, LlmReply, LlmTransport } from '../../../main/ets/common/
 class FakeSpeechPort implements SpeechPort {
   startCount: number = 0;
   stopCount: number = 0;
+  failStart: boolean = false;
   currentCb: SpeechSessionCallbacks | undefined = undefined;
 
   async startListening(petKey: string, mode: 'once', cb: SpeechSessionCallbacks): Promise<boolean> {
     this.startCount += 1;
     this.currentCb = cb;
-    return true;
+    return !this.failStart;
   }
 
   stopListening(): void {
@@ -36,6 +37,7 @@ class TurnRecorder implements ContinuousTurnCallbacks {
   replies: string[] = [];
   notices: string[] = [];
   errors: string[] = [];
+  sessionStartedCount: number = 0;
   private replyGate: Promise<void> | undefined = undefined;
   private replyGateResolve: (() => void) | undefined = undefined;
 
@@ -72,6 +74,10 @@ class TurnRecorder implements ContinuousTurnCallbacks {
 
   onError(message: string): void {
     this.errors.push(message);
+  }
+
+  onSessionStarted(): void {
+    this.sessionStartedCount += 1;
   }
 }
 
@@ -170,6 +176,36 @@ export default function petContinuousChatServiceTest(): void {
       expect(rec.errors.length).assertEqual(0);
       expect(port.startCount).assertEqual(2);
       expect(service.isRunning()).assertTrue();
+    });
+    it('首轮聆听启动失败时终止会话并回调onError', TestType.FUNCTION | Size.MEDIUM_TEST | Level.LEVEL1, async () => {
+      service.stopSession();
+      const port: FakeSpeechPort = new FakeSpeechPort();
+      port.failStart = true;
+      const rec: TurnRecorder = new TurnRecorder();
+      const pet: PetModel = new PetModel('团子', '猫咪', undefined, petKey);
+      const started: boolean = await service.startSession(pet, petKey, rec, context, port, new StubTransport());
+      expect(started).assertTrue();
+      await shortDelay();
+
+      expect(rec.errors.length).assertEqual(1);
+      expect(service.isRunning()).assertFalse();
+      expect(rec.replies.length).assertEqual(0);
+    });
+    it('会话首轮启动成功仅回调一次onSessionStarted', TestType.FUNCTION | Size.MEDIUM_TEST | Level.LEVEL1, async () => {
+      service.stopSession();
+      const port: FakeSpeechPort = new FakeSpeechPort();
+      const rec: TurnRecorder = new TurnRecorder();
+      const pet: PetModel = new PetModel('团子', '猫咪', undefined, petKey);
+      await service.startSession(pet, petKey, rec, context, port, new StubTransport());
+      await shortDelay();
+      expect(rec.sessionStartedCount).assertEqual(1);
+
+      const cb = port.currentCb;
+      if (cb) {
+        cb.onFinal('再来一句');
+      }
+      await shortDelay();
+      expect(rec.sessionStartedCount).assertEqual(1);
     });
   });
 }
