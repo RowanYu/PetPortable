@@ -37,7 +37,6 @@ oh-package-lock.json5
 
 # Test code
 /entry/src/test/
-/entry/src/ohosTest/
 
 # OS files
 .DS_Store
