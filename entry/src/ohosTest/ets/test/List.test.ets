@@ -5,6 +5,7 @@ import petAiContextTest from './PetAiContext.test.ets';
 import petAiFallbackTest from './PetAiFallback.test.ets';
 import petPersistenceTest from './PetPersistence.test.ets';
 import petConversationTest from './PetConversation.test.ets';
+import petChatGesturePolicyTest from './PetChatGesturePolicy.test.ets';
 
 /**
  * ohosTest 测试入口：所有测试套件在此统一注册
@@ -16,4 +17,5 @@ export default function testsuite(): void {
   petAiFallbackTest();
   petPersistenceTest();
   petConversationTest();
+  petChatGesturePolicyTest();
 }
