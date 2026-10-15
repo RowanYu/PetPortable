@@ -1,0 +1,22 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/WelcomePage",
+    "pages/RegisterPage",
+    "pages/AddPetPage",
+    "pages/AddPetNamePage",
+    "pages/PetProfilePage",
+    "pages/PetProfileDetail",
+    "pages/PetProfileRecords",
+    "pages/PlayPage",
+    "pages/HideSeekPage",
+    "pages/HideSeekGamePage",
+    "pages/FeedPage",
+    "pages/ChatPage",
+    "pages/DreamDiaryPage",
+    "pages/SensorPanelPage",
+    "pages/ThankYouPage",
+    "pages/PersonalPage",
+    "pages/RedeemPage"
+  ]
+}
