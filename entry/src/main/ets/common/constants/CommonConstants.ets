@@ -61,4 +61,21 @@ export class CommonConstants {
    */
   static readonly TEMP_TOO_HIGH: number = 32;   // 温度过高阈值 (°C)
   static readonly HUMIDITY_TOO_HIGH: number = 80; // 湿度过高阈值 (%)
+
+  /**
+   * LLM 对话服务配置（StepFun Anthropic Messages 协议中转）
+   * - 请求：POST {LLM_BASE_URL}，Authorization: Bearer {LLM_API_KEY}
+   * - 请求体：{ model, max_tokens, system?, messages: [{role, content}] }
+   * - 响应：{ content: [{ type: 'text', text: '...' }] }
+   *
+   * 注意：LLM_API_KEY 为用户下发的临时方案（写死在代码）。
+   * 风险：本仓库有 git 历史，若推送远端即泄漏，密钥轮换后需改造为安全存储。
+   */
+  static readonly LLM_BASE_URL: string = 'https://api.stepfun.com/step_plan/v1/messages';
+  static readonly LLM_MODEL: string = 'step-3.5-flash-2603';
+  static readonly LLM_API_KEY: string = ''; // 待用户下发准确 Key 后填入
+  static readonly LLM_TIMEOUT_MS: number = 8000;
+  static readonly LLM_MAX_TOKENS: number = 256;   // Anthropic 协议必填
+  static readonly LLM_REPLY_LIMIT: number = 120;  // AI 回复截断上限（字）
+  static readonly CHAT_HISTORY_LIMIT: number = 10; // 多轮上下文携带的历史条数
 }
