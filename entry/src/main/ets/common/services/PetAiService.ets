@@ -2,13 +2,79 @@ import { PetDreamRecord, PetMemoryRecord, PetModel } from '../models/PetModel';
 import { ChatMessage } from '../models/ChatModels';
 import { PetLifecycleService } from './PetLifecycleService';
 import { InteractionLogItem, InteractionService, InteractionType } from './InteractionService';
-import { AiChatMessage } from './PetLlmClient';
+import { AiChatMessage, HttpLlmTransport, LlmTransport } from './PetLlmClient';
 import { CommonConstants } from '../constants/CommonConstants';
+
+/**
+ * 一次 AI 对话的结果：content 为回复文本，source 标记来自 AI 引擎还是本地兜底
+ */
+export interface PetAiReply {
+  content: string;
+  source: 'ai' | 'local';
+}
 
 export class PetAiService {
   private static readonly MEMORY_LIMIT: number = 12;
   private static readonly CHAT_RECALL_LIMIT: number = 4;
   private static readonly INTERACTION_RECALL_LIMIT: number = 4;
+  private static defaultTransportInstance: LlmTransport | undefined = undefined;
+
+  /**
+   * 默认传输层：惰性单例，读取 CommonConstants 的 StepFun 配置
+   */
+  static get defaultTransport(): LlmTransport {
+    if (!PetAiService.defaultTransportInstance) {
+      PetAiService.defaultTransportInstance = new HttpLlmTransport(
+        CommonConstants.LLM_BASE_URL,
+        CommonConstants.LLM_MODEL,
+        CommonConstants.LLM_API_KEY,
+        CommonConstants.LLM_TIMEOUT_MS
+      );
+    }
+    return PetAiService.defaultTransportInstance;
+  }
+
+  /**
+   * 真实 AI 对话入口：调度 DeepSeek 兼容 LLM，任何失败自动回退本地模板引擎。
+   * 绝不上抛异常。
+   */
+  static async replyWithAI(pet: PetModel, userMessage: string, history: ChatMessage[],
+    transport: LlmTransport): Promise<PetAiReply> {
+    const sanitized: string = userMessage.trim();
+    const finalMessage: string = sanitized.length > 0 ? sanitized : '你今天想和我聊点什么';
+
+    let aiContent: string = '';
+    try {
+      const messages: AiChatMessage[] = PetAiService.buildConversationMessages(pet, finalMessage, history);
+      const llmReply = await transport.chat(messages);
+      if (llmReply.ok && llmReply.content.trim().length > 0) {
+        aiContent = PetAiService.limitAiReply(llmReply.content.trim());
+      }
+    } catch (e) {
+      aiContent = '';
+    }
+
+    if (aiContent.length > 0) {
+      PetLifecycleService.addMemory(pet, '对话记忆', `主人：${finalMessage}`);
+      PetLifecycleService.addMemory(pet, '对话记忆', `AI宠物：${aiContent}`);
+      pet.currentSpeech = aiContent;
+      const aiResult: PetAiReply = { content: aiContent, source: 'ai' };
+      return aiResult;
+    }
+
+    // 回退：复用同步本地引擎（行为与 reply() 完全一致）
+    const localResult: PetAiReply = { content: PetAiService.reply(pet, finalMessage), source: 'local' };
+    return localResult;
+  }
+
+  /**
+   * AI 回复截断：超过 LLM_REPLY_LIMIT 字截断并以省略号结尾
+   */
+  private static limitAiReply(reply: string): string {
+    const limit: number = CommonConstants.LLM_REPLY_LIMIT;
+    return reply.length <= limit ? reply : `${reply.slice(0, limit - 1)}…`;
+  }
+
 
   /**
    * 构建多轮对话上下文：system（persona + 检索记忆） + 最近 N 条历史 + 当前用户消息
