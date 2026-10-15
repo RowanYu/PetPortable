@@ -1,11 +1,58 @@
 import { PetDreamRecord, PetMemoryRecord, PetModel } from '../models/PetModel';
+import { ChatMessage } from '../models/ChatModels';
 import { PetLifecycleService } from './PetLifecycleService';
 import { InteractionLogItem, InteractionService, InteractionType } from './InteractionService';
+import { AiChatMessage } from './PetLlmClient';
+import { CommonConstants } from '../constants/CommonConstants';
 
 export class PetAiService {
   private static readonly MEMORY_LIMIT: number = 12;
   private static readonly CHAT_RECALL_LIMIT: number = 4;
   private static readonly INTERACTION_RECALL_LIMIT: number = 4;
+
+  /**
+   * 构建多轮对话上下文：system（persona + 检索记忆） + 最近 N 条历史 + 当前用户消息
+   * 供 replyWithAI 调用 LLM 时使用
+   */
+  static buildConversationMessages(pet: PetModel, userMessage: string, history: ChatMessage[]): AiChatMessage[] {
+    const result: AiChatMessage[] = [];
+    result.push({ role: 'system', content: PetAiService.buildSystemPrompt(pet, userMessage) });
+
+    const recent: ChatMessage[] = history.length > CommonConstants.CHAT_HISTORY_LIMIT
+      ? history.slice(history.length - CommonConstants.CHAT_HISTORY_LIMIT)
+      : history;
+    for (let i: number = 0; i < recent.length; i += 1) {
+      const item: ChatMessage = recent[i];
+      result.push({ role: item.role === '主人' ? 'user' : 'assistant', content: item.content });
+    }
+
+    result.push({ role: 'user', content: userMessage });
+    return result;
+  }
+
+  /**
+   * 构建 system 提示词：宠物人设 + 相关长期记忆（仅当检索结果非空时输出记忆小节）
+   */
+  private static buildSystemPrompt(pet: PetModel, userMessage: string): string {
+    const label: string = pet.resolvePersonalityLabel();
+    let prompt: string = `你是宠物"${pet.name}"（${pet.breed}，性格：${label}，心情：${pet.emotion}，` +
+      `亲密度${pet.attributes.intimacy}/100）。` +
+      '用简体中文以亲密宠物的口吻回复主人，60字以内，口语化、自然连贯，结合上面聊过的内容回答，不要用列表和表情符号。';
+
+    const recalled: PetMemoryRecord[] = PetLifecycleService.recallMemories(pet, userMessage, PetAiService.CHAT_RECALL_LIMIT);
+    const lines: string[] = [];
+    for (let i: number = 0; i < recalled.length; i += 1) {
+      const content: string = recalled[i].content.trim();
+      if (content.length > 0) {
+        lines.push(`- ${content}`);
+      }
+    }
+    if (lines.length > 0) {
+      prompt = `${prompt}\n你记得的事：\n${lines.join('\n')}`;
+    }
+    return prompt;
+  }
+
 
   static reply(pet: PetModel, userMessage: string): string {
     const sanitized: string = userMessage.trim();
@@ -42,7 +89,7 @@ export class PetAiService {
     const closenessLabel: string = PetAiService.resolveClosenessLabel(pet);
 
     dream.title = `${titlePrefix}·${place}`;
-    dream.content = `在${timePhase}的梦里，我和你来到${place}。${sceneStart}。你提到“${ownerTopic}”，于是我们${sceneMiddle}。后来${sceneConflict}，我因为${closenessLabel}慢慢安定下来。醒来前，我们还一起${sceneEnding}，像现实里你陪我${preferredActivity}时一样踏实。`;
+    dream.content = `在${timePhase}的梦里，我和你来到${place}。${sceneStart}。你提到"${ownerTopic}"，于是我们${sceneMiddle}。后来${sceneConflict}，我因为${closenessLabel}慢慢安定下来。醒来前，我们还一起${sceneEnding}，像现实里你陪我${preferredActivity}时一样踏实。`;
     dream.moodTag = PetAiService.resolveMoodTag(category, pet.emotion);
 
     pet.dreams.unshift(dream);
@@ -310,7 +357,7 @@ export class PetAiService {
     const recalledTopic: string = bestScore > 0 ? bestTopic : fallbackTopic;
     if (recalledTopic.length > 0) {
       const shortTopic: string = recalledTopic.length > 22 ? `${recalledTopic.slice(0, 22)}…` : recalledTopic;
-      return `记得呀，你之前和我说过“${shortTopic}”。`;
+      return `记得呀，你之前和我说过"${shortTopic}"。`;
     }
     return '我还没有找到那段记忆。你再告诉我一次，我会认真记住。';
   }
@@ -450,10 +497,10 @@ export class PetAiService {
       }
       const shortTopic: string = topic.length > 16 ? `${topic.slice(0, 16)}…` : topic;
       return PetAiService.pickOne([
-        `刚才你说的“${shortTopic}”我也记着呢`,
-        `你之前提过“${shortTopic}”，我还记得`,
-        `你聊过的“${shortTopic}”，我心里有印象`,
-        `上次聊的“${shortTopic}”我没忘`
+        `刚才你说的"${shortTopic}"我也记着呢`,
+        `你之前提过"${shortTopic}"，我还记得`,
+        `你聊过的"${shortTopic}"，我心里有印象`,
+        `上次聊的"${shortTopic}"我没忘`
       ]);
     }
     return '';
