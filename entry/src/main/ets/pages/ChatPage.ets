@@ -8,6 +8,7 @@ import { PetCuteVoiceService, PetVoiceSynthesisResult } from '../common/services
 import { PetConversationService } from '../common/services/PetConversationService';
 import { PetPersistenceService } from '../common/services/PetPersistenceService';
 import { PetSpeechRecognizerService, SpeechSessionCallbacks } from '../common/services/PetSpeechRecognizerService';
+import { PetChatGesturePolicy } from '../common/services/PetChatGesturePolicy';
 
 const TYPEWRITER_INTERVAL_MS: number = 24;
 
@@ -28,6 +29,10 @@ struct ChatPage {
   @State holdButtonText: string = '按住说话';
   @State isHolding: boolean = false;
   @State holdPartialText: string = '';
+  @State swipeHintVisible: boolean = false;
+  @State swipeActivated: boolean = false;
+  @State swipeOffsetY: number = 0;
+  private enterContinuousOnRelease: boolean = false;
   private simulatedHold: boolean = false;
   private holdSettled: boolean = false;
   private holdStartAt: number = 0;
@@ -208,6 +213,8 @@ struct ChatPage {
     this.simulatedHold = false;
     this.holdPartialText = '';
     this.holdStartAt = Date.now();
+    this.enterContinuousOnRelease = false;
+    this.clearSwipeHint();
     void this.beginHoldListening();
   }
 
@@ -269,6 +276,15 @@ struct ChatPage {
     if (!this.isHolding || this.isProcessing) {
       return;
     }
+    if (this.enterContinuousOnRelease) {
+      // 上滑松开：丢弃本次按住的单句识别，进入连续聊天（Task 5 接入服务）
+      this.enterContinuousOnRelease = false;
+      this.holdSettled = true;
+      this.clearHoldFinalTimer();
+      this.speechService.stopListening();
+      this.resetHoldState();
+      return;
+    }
     if (this.simulatedHold) {
       this.isHolding = false;
       this.holdButtonText = '处理中';
@@ -312,6 +328,12 @@ struct ChatPage {
       clearTimeout(this.holdFinalTimer);
       this.holdFinalTimer = -1;
     }
+  }
+
+  private clearSwipeHint(): void {
+    this.swipeHintVisible = false;
+    this.swipeActivated = false;
+    this.swipeOffsetY = 0;
   }
 
   private async processVoice(): Promise<void> {
@@ -496,6 +518,23 @@ struct ChatPage {
           .fontSize(12)
           .fontColor('#A0B3C6');
 
+        if (this.swipeHintVisible) {
+          Text(this.swipeActivated ? '松开开启连续聊天' : '上滑开启连续聊天')
+            .width('100%')
+            .textAlign(TextAlign.Center)
+            .fontSize(13)
+            .fontColor(this.swipeActivated ? '#FFFFFF' : 'rgba(255,255,255,0.7)')
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+            .borderRadius(14)
+            .backgroundColor(this.swipeActivated ? 'rgba(122,79,212,0.9)' : 'rgba(20,30,40,0.92)')
+            .border({
+              width: this.swipeActivated ? 1.5 : 1,
+              color: this.swipeActivated ? '#B79CFF' : 'rgba(255,255,255,0.25)'
+            })
+            .scale({ x: this.swipeActivated ? 1.05 : 1, y: this.swipeActivated ? 1.05 : 1 })
+            .animation({ duration: 150 });
+        }
+
         Button(this.holdButtonText)
           .width('100%')
           .height(46)
@@ -514,9 +553,33 @@ struct ChatPage {
             }
             if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
               this.holdBtnScale = 1;
+              if (event.type === TouchType.Up && this.isHolding && this.swipeActivated) {
+                this.enterContinuousOnRelease = true;
+                this.clearSwipeHint();
+              } else if (event.type === TouchType.Cancel) {
+                this.enterContinuousOnRelease = false;
+                this.clearSwipeHint();
+              }
               this.onHoldEnd();
             }
           })
+          .gesture(PanGesture({ fingers: 1, direction: PanDirection.Vertical, distance: 8 })
+            .onActionStart((event: GestureEvent) => {
+              if (this.isHolding) {
+                this.swipeOffsetY = event.offsetY;
+                this.swipeHintVisible = true;
+              }
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              if (this.isHolding) {
+                this.swipeOffsetY = event.offsetY;
+                this.swipeHintVisible = true;
+                this.swipeActivated = PetChatGesturePolicy.isSwipeUpEnter(this.swipeOffsetY);
+              }
+            })
+            .onActionEnd(() => {
+              this.swipeHintVisible = false;
+            }))
           .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.95 });
       }
       .width('100%')
