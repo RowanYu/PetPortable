@@ -15,6 +15,10 @@
     {
       "name": "reason_internet",
       "value": "用于通知 PC 端切换宠物视频推流"
+    },
+    {
+      "name": "microphone_reason",
+      "value": "用于宠物语音对话识别"
     }
   ]
 }
