@@ -9,6 +9,7 @@ import { PetConversationService } from '../common/services/PetConversationServic
 import { PetPersistenceService } from '../common/services/PetPersistenceService';
 import { PetSpeechRecognizerService, SpeechSessionCallbacks } from '../common/services/PetSpeechRecognizerService';
 import { PetChatGesturePolicy } from '../common/services/PetChatGesturePolicy';
+import { PetContinuousChatService, ContinuousTurnCallbacks } from '../common/services/PetContinuousChatService';
 
 const TYPEWRITER_INTERVAL_MS: number = 24;
 
@@ -32,6 +33,7 @@ struct ChatPage {
   @State swipeHintVisible: boolean = false;
   @State swipeActivated: boolean = false;
   @State swipeOffsetY: number = 0;
+  @State isContinuousMode: boolean = false;
   private enterContinuousOnRelease: boolean = false;
   private simulatedHold: boolean = false;
   private holdSettled: boolean = false;
@@ -135,6 +137,10 @@ struct ChatPage {
 
   /** 「唤醒AI」头像点击：未监听则开启 once 识别；监听中再次点击安全取消 */
   private onAvatarClick(): void {
+    if (this.isContinuousMode) {
+      this.exitContinuousChat();
+      return;
+    }
     if (this.isListening) {
       this.speechService.stopListening();
       this.isListening = false;
@@ -204,7 +210,7 @@ struct ChatPage {
   }
 
   private onHoldStart(): void {
-    if (this.isProcessing || this.isHolding) {
+    if (this.isProcessing || this.isHolding || this.isContinuousMode) {
       return;
     }
     this.isHolding = true;
@@ -277,12 +283,13 @@ struct ChatPage {
       return;
     }
     if (this.enterContinuousOnRelease) {
-      // 上滑松开：丢弃本次按住的单句识别，进入连续聊天（Task 5 接入服务）
+      // 上滑松开：丢弃本次按住的单句识别，进入连续聊天
       this.enterContinuousOnRelease = false;
       this.holdSettled = true;
       this.clearHoldFinalTimer();
       this.speechService.stopListening();
-      this.resetHoldState();
+      this.clearSwipeHint();
+      void this.enterContinuousChat();
       return;
     }
     if (this.simulatedHold) {
@@ -354,6 +361,60 @@ struct ChatPage {
     this.appendMessage('主人', result.transcript, 'user', '');
     this.appendMessage('宠物', result.reply, 'pet', 'ai');
     this.stageDetail = `配音：${result.voiceRole}·${result.voiceOutput}`;
+  }
+
+  /** 上滑松开进入连续聊天：聆听 → 回复 → 自动重启聆听，直到点击退出 */
+  private async enterContinuousChat(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const petKey: string = PetPersistenceService.resolvePetKey(this.pet);
+    const callbacks: ContinuousTurnCallbacks = {
+      onPartial: (text: string) => {
+        this.listeningText = text;
+      },
+      onTurnStart: (transcript: string) => {
+        this.listeningText = '';
+        this.appendMessage('主人', transcript, 'user', '');
+      },
+      onTurnReply: (reply: PetAiReply): Promise<void> => {
+        return this.typewriterReply(reply);
+      },
+      onNotice: (message: string) => {
+        promptAction.showToast({ message: message });
+      },
+      onError: (message: string) => {
+        promptAction.showToast({ message: message });
+        this.exitContinuousChat();
+      }
+    };
+    const started: boolean = await PetContinuousChatService.getInstance()
+      .startSession(this.pet, petKey, callbacks, context);
+    if (!started) {
+      promptAction.showToast({ message: '当前设备不支持连续聊天' });
+      return;
+    }
+    this.isContinuousMode = true;
+    this.holdButtonText = '点击退出连续聊天';
+    this.stage = '录音中';
+    this.stageDetail = '面对面聊天中，说完自动回复';
+    promptAction.showToast({ message: '连续聊天已开启，说完自动回复' });
+  }
+
+  /** 退出连续聊天（幂等）：停会话、清聆听态、按钮复原 */
+  private exitContinuousChat(): void {
+    PetContinuousChatService.getInstance().stopSession();
+    this.isContinuousMode = false;
+    this.listeningText = '';
+    this.holdButtonText = '按住说话';
+    this.stage = '空闲';
+    this.stageDetail = '可输入文字，也可按住说话';
+    promptAction.showToast({ message: '已退出连续聊天' });
+  }
+
+  aboutToDisappear(): void {
+    if (this.isContinuousMode) {
+      PetContinuousChatService.getInstance().stopSession();
+      this.isContinuousMode = false;
+    }
   }
 
   @Builder
@@ -444,7 +505,7 @@ struct ChatPage {
 
       Column({ space: 10 }) {
         if (this.listeningText.length > 0) {
-          Text(`正在识别：${this.listeningText}`)
+          Text(`${this.isContinuousMode ? '正在聆听' : '正在识别'}：${this.listeningText}`)
             .width('100%')
             .fontSize(12)
             .fontColor('rgba(255,255,255,0.6)');
@@ -535,10 +596,18 @@ struct ChatPage {
             .animation({ duration: 150 });
         }
 
+        if (this.isContinuousMode) {
+          Text('面对面聊天中 · 宠物回复后自动聆听')
+            .width('100%')
+            .textAlign(TextAlign.Center)
+            .fontSize(12)
+            .fontColor('#B79CFF');
+        }
+
         Button(this.holdButtonText)
           .width('100%')
           .height(46)
-          .backgroundColor(this.isHolding ? '#1B85F3' : '#0A8FB7')
+          .backgroundColor(this.isContinuousMode ? '#7A4FD4' : (this.isHolding ? '#1B85F3' : '#0A8FB7'))
           .fontColor('#FFFFFF')
           .fontSize(15)
           .fontWeight(FontWeight.Medium)
@@ -547,6 +616,9 @@ struct ChatPage {
           .scale({ x: this.holdBtnScale, y: this.holdBtnScale })
           .animation({ duration: 140 })
           .onTouch((event: TouchEvent) => {
+            if (this.isContinuousMode) {
+              return;
+            }
             if (event.type === TouchType.Down) {
               this.holdBtnScale = 0.95;
               this.onHoldStart();
@@ -561,6 +633,11 @@ struct ChatPage {
                 this.clearSwipeHint();
               }
               this.onHoldEnd();
+            }
+          })
+          .onClick(() => {
+            if (this.isContinuousMode) {
+              this.exitContinuousChat();
             }
           })
           .gesture(PanGesture({ fingers: 1, direction: PanDirection.Vertical, distance: 8 })
