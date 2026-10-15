@@ -27,6 +27,11 @@ struct ChatPage {
   @State stageDetail: string = '可输入文字，也可按住说话';
   @State holdButtonText: string = '按住说话';
   @State isHolding: boolean = false;
+  @State holdPartialText: string = '';
+  private simulatedHold: boolean = false;
+  private holdSettled: boolean = false;
+  private holdStartAt: number = 0;
+  private holdFinalTimer: number = -1;
   @State isProcessing: boolean = false;
   @State isListening: boolean = false;
   @State listeningText: string = '';
@@ -194,25 +199,119 @@ struct ChatPage {
   }
 
   private onHoldStart(): void {
-    if (this.isProcessing) {
+    if (this.isProcessing || this.isHolding) {
       return;
     }
     this.isHolding = true;
     this.holdButtonText = '松开结束';
-    this.voiceService.beginPress((stage: VoiceStage, detail: string): void => {
-      this.stage = stage;
-      this.stageDetail = detail;
-    });
+    this.holdSettled = false;
+    this.simulatedHold = false;
+    this.holdPartialText = '';
+    this.holdStartAt = Date.now();
+    void this.beginHoldListening();
+  }
+
+  /** 按下即开启真实录音（once 识别）；识别不可用时降级为模拟兜底 */
+  private async beginHoldListening(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const granted: boolean = await PetSpeechRecognizerService.requestMicPermission(context);
+    if (!granted) {
+      promptAction.showToast({ message: '需要麦克风权限才能语音对话' });
+      this.resetHoldState();
+      return;
+    }
+    const petKey: string = PetPersistenceService.resolvePetKey(this.pet);
+    const callbacks: SpeechSessionCallbacks = {
+      onPartial: (text: string) => {
+        this.holdPartialText = text;
+      },
+      onFinal: (text: string) => {
+        if (this.holdSettled) {
+          return;
+        }
+        this.holdSettled = true;
+        this.clearHoldFinalTimer();
+        this.isHolding = false;
+        this.holdPartialText = '';
+        const trimmed: string = text.trim();
+        if (trimmed.length === 0) {
+          this.holdButtonText = '按住说话';
+          promptAction.showToast({ message: '没听清，请再试一次' });
+          return;
+        }
+        this.isProcessing = true;
+        void this.handleUserTranscript(trimmed).then(() => {
+          this.holdButtonText = '按住说话';
+        });
+      },
+      onError: (message: string) => {
+        if (this.holdSettled) {
+          return;
+        }
+        this.holdSettled = true;
+        this.clearHoldFinalTimer();
+        this.resetHoldState();
+        promptAction.showToast({ message: message });
+      }
+    };
+    const started: boolean = await this.speechService.startListening(petKey, 'once', callbacks);
+    if (!started) {
+      // 端侧识别不可用：降级为原模拟识别兜底（不崩溃）
+      this.simulatedHold = true;
+      this.voiceService.beginPress((stage: VoiceStage, detail: string): void => {
+        this.stage = stage;
+        this.stageDetail = detail;
+      });
+    }
   }
 
   private onHoldEnd(): void {
     if (!this.isHolding || this.isProcessing) {
       return;
     }
-    this.isHolding = false;
+    if (this.simulatedHold) {
+      this.isHolding = false;
+      this.holdButtonText = '处理中';
+      this.isProcessing = true;
+      void this.processVoice();
+      return;
+    }
+    // 松开即说话结束：finish 触发 onFinal 异步到达
+    this.speechService.stopListening();
+    const durationMs: number = Date.now() - this.holdStartAt;
+    if (this.holdSettled) {
+      return;
+    }
+    if (durationMs < 450) {
+      this.holdSettled = true;
+      this.resetHoldState();
+      promptAction.showToast({ message: '没听清，请再试一次' });
+      return;
+    }
     this.holdButtonText = '处理中';
-    this.isProcessing = true;
-    void this.processVoice();
+    // final 等待兜底：1.5s 内未收到识别结果按没听清处理
+    this.holdFinalTimer = setTimeout(() => {
+      if (!this.holdSettled) {
+        this.holdSettled = true;
+        this.resetHoldState();
+        promptAction.showToast({ message: '没听清，请再试一次' });
+      }
+    }, 1500);
+  }
+
+  private resetHoldState(): void {
+    this.isHolding = false;
+    this.holdButtonText = '按住说话';
+    this.holdPartialText = '';
+    this.stage = '空闲';
+    this.stageDetail = '可输入文字，也可按住说话';
+  }
+
+  private clearHoldFinalTimer(): void {
+    if (this.holdFinalTimer !== -1) {
+      clearTimeout(this.holdFinalTimer);
+      this.holdFinalTimer = -1;
+    }
   }
 
   private async processVoice(): Promise<void> {
@@ -324,6 +423,13 @@ struct ChatPage {
       Column({ space: 10 }) {
         if (this.listeningText.length > 0) {
           Text(`正在识别：${this.listeningText}`)
+            .width('100%')
+            .fontSize(12)
+            .fontColor('rgba(255,255,255,0.6)');
+        }
+
+        if (this.isHolding && this.holdPartialText.length > 0) {
+          Text(`正在聆听：${this.holdPartialText}`)
             .width('100%')
             .fontSize(12)
             .fontColor('rgba(255,255,255,0.6)');
