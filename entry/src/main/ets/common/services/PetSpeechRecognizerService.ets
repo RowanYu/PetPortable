@@ -8,9 +8,9 @@ export type SpeechMode = 'once' | 'continuous';
 
 /** 语音会话回调 */
 export interface SpeechSessionCallbacks {
-  onPartial(text: string): void;
-  onFinal(text: string): void;
-  onError(message: string): void;
+  onPartial: (text: string) => void;
+  onFinal: (text: string) => void;
+  onError: (message: string) => void;
 }
 
 const TAG: string = 'PetSpeech';
@@ -186,8 +186,10 @@ export class PetSpeechRecognizerService {
     };
     const capturerOptions: audio.AudioCapturerOptions = {
       streamInfo: streamInfo,
-      capturerMode: audio.AudioCapturerMode.CAPTURE_MODE_NORMAL,
-      capturerFlags: 0
+      capturerInfo: {
+        source: audio.SourceType.SOURCE_TYPE_MIC,
+        capturerFlags: 0
+      }
     };
     const capturer: audio.AudioCapturer = await audio.createAudioCapturer(capturerOptions);
     self.capturer = capturer;

@@ -1,15 +1,15 @@
-import { router } from '@kit.ArkUI';
+import { router, promptAction } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import { PetModel } from '../common/models/PetModel';
-import { PetAiService } from '../common/services/PetAiService';
-import { InteractionService } from '../common/services/InteractionService';
+import { ChatMessage } from '../common/models/ChatModels';
+import { PetAiReply } from '../common/services/PetAiService';
 import { PetVoiceService, VoiceSessionResult, VoiceStage } from '../common/services/PetVoiceService';
 import { PetCuteVoiceService, PetVoiceSynthesisResult } from '../common/services/PetCuteVoiceService';
+import { PetConversationService } from '../common/services/PetConversationService';
+import { PetPersistenceService } from '../common/services/PetPersistenceService';
+import { PetSpeechRecognizerService, SpeechSessionCallbacks } from '../common/services/PetSpeechRecognizerService';
 
-interface ChatMessage {
-  id: string;
-  role: '主人' | '宠物';
-  content: string;
-}
+const TYPEWRITER_INTERVAL_MS: number = 24;
 
 @Entry
 @Component
@@ -17,6 +17,7 @@ struct ChatPage {
   @StorageLink('currentPet') pet: PetModel = new PetModel('小橘', '宠物', $r('app.media.pet_duck_full'), 'duck_default');
   private readonly voiceService: PetVoiceService = PetVoiceService.getInstance();
   private readonly cuteVoiceService: PetCuteVoiceService = PetCuteVoiceService.getInstance();
+  private readonly speechService: PetSpeechRecognizerService = PetSpeechRecognizerService.getInstance();
   @State backBtnScale: number = 1;
   @State sendBtnScale: number = 1;
   @State holdBtnScale: number = 1;
@@ -27,47 +28,169 @@ struct ChatPage {
   @State holdButtonText: string = '按住说话';
   @State isHolding: boolean = false;
   @State isProcessing: boolean = false;
+  @State isListening: boolean = false;
+  @State listeningText: string = '';
+  @State typingContent: string = '';
 
   aboutToAppear(): void {
+    const petKey: string = PetPersistenceService.resolvePetKey(this.pet);
+    const history: ChatMessage[] = PetConversationService.getHistory(petKey);
+    if (history.length > 0) {
+      this.messages = history.slice();
+      return;
+    }
     if (this.messages.length === 0) {
       this.messages = [{
         id: `${Date.now()}-welcome`,
         role: '宠物',
-        content: this.pet.currentSpeech.length > 0 ? this.pet.currentSpeech : '主人，今天想聊些什么呢'
+        content: this.pet.currentSpeech.length > 0 ? this.pet.currentSpeech : '主人，今天想聊些什么呢',
+        source: ''
       }];
     }
   }
 
-  private appendMessage(role: '主人' | '宠物', content: string, suffix: string): void {
+  private appendMessage(role: '主人' | '宠物', content: string, suffix: string, source: string): void {
     const message: ChatMessage = {
       id: `${Date.now()}-${suffix}`,
       role,
-      content
+      content,
+      source
     };
     this.messages = [...this.messages, message];
   }
 
-  private appendDialogue(userContent: string, petContent: string): void {
-    this.appendMessage('主人', userContent, 'user');
-    this.appendMessage('宠物', petContent, 'pet');
+  /**
+   * 打字机上屏：AI 回复逐字追加（豆包式流式观感）；本地兜底直接上屏保证「快」
+   */
+  private async typewriterReply(reply: PetAiReply): Promise<void> {
+    if (reply.source !== 'ai') {
+      this.appendMessage('宠物', reply.content, 'pet', 'local');
+      this.speakReply(reply.content);
+      return;
+    }
+
+    const full: string = reply.content;
+    this.typingContent = '';
+    await new Promise<void>((resolve: () => void) => {
+      let shown: number = 0;
+      const timer: number = setInterval(() => {
+        shown += 1;
+        this.typingContent = full.slice(0, shown);
+        if (shown >= full.length) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, TYPEWRITER_INTERVAL_MS);
+    });
+    this.typingContent = '';
+    this.appendMessage('宠物', full, 'pet', 'ai');
+    this.speakReply(full);
+  }
+
+  /** 可爱配音播报 */
+  private speakReply(replyText: string): void {
+    const textVoiceResult: PetVoiceSynthesisResult = this.cuteVoiceService.synthesizeSpeech(this.pet, replyText);
+    this.stage = '语音播报';
+    this.stageDetail = `配音：${textVoiceResult.voiceRole}·${textVoiceResult.voiceText}`;
+  }
+
+  /** 打字中临时气泡（方法返回保证类型标注，规避 ArkTS 无类型字面量限制） */
+  private typingBubble(): ChatMessage {
+    const bubble: ChatMessage = {
+      id: 'typing-bubble',
+      role: '宠物',
+      content: this.typingContent,
+      source: 'ai'
+    };
+    return bubble;
   }
 
   private async sendMessage(): Promise<void> {
     const text: string = this.inputText.trim();
-    if (text.length === 0) {
+    if (text.length === 0 || this.isProcessing) {
+      return;
+    }
+    this.isProcessing = true;
+    this.appendMessage('主人', text, 'user', '');
+    this.inputText = '';
+
+    try {
+      const reply: PetAiReply = await PetConversationService.chatWithText(
+        this.pet, text, getContext(this) as common.UIAbilityContext);
+      await this.typewriterReply(reply);
+    } finally {
+      this.isProcessing = false;
+    }
+  }
+
+  /** 「唤醒AI」头像点击：未监听则开启 once 识别；监听中再次点击安全取消 */
+  private onAvatarClick(): void {
+    if (this.isListening) {
+      this.speechService.stopListening();
+      this.isListening = false;
+      this.listeningText = '';
+      this.stage = '空闲';
+      this.stageDetail = '已取消语音监听';
+      return;
+    }
+    void this.startVoiceWake();
+  }
+
+  private async startVoiceWake(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const granted: boolean = await PetSpeechRecognizerService.requestMicPermission(context);
+    if (!granted) {
+      promptAction.showToast({ message: '需要麦克风权限才能语音对话' });
       return;
     }
 
-    this.appendMessage('主人', text, 'user');
+    const callbacks: SpeechSessionCallbacks = {
+      onPartial: (text: string) => {
+        this.listeningText = text;
+      },
+      onFinal: (text: string) => {
+        this.isListening = false;
+        this.listeningText = '';
+        if (text.trim().length > 0) {
+          void this.handleUserTranscript(text.trim());
+        }
+      },
+      onError: (message: string) => {
+        this.isListening = false;
+        this.listeningText = '';
+        promptAction.showToast({ message: message });
+        this.stage = '空闲';
+        this.stageDetail = '语音不可用时仍可文字输入';
+      }
+    };
 
-    const replyText: string = PetAiService.reply(this.pet, text);
-    await InteractionService.getInstance().chat(this.pet, text);
-    this.pet.currentSpeech = replyText;
-    const textVoiceResult: PetVoiceSynthesisResult = this.cuteVoiceService.synthesizeSpeech(this.pet, replyText);
-    this.appendMessage('宠物', replyText, 'pet');
-    this.stage = '语音播报';
-    this.stageDetail = `配音：${textVoiceResult.voiceRole}·${textVoiceResult.voiceText}`;
-    this.inputText = '';
+    const petKey: string = PetPersistenceService.resolvePetKey(this.pet);
+    const started: boolean = await this.speechService.startListening(petKey, 'once', callbacks);
+    if (!started) {
+      promptAction.showToast({ message: '当前设备不支持语音，请用文字输入' });
+      return;
+    }
+    this.isListening = true;
+    this.stage = '录音中';
+    this.stageDetail = '正在聆听，说完自动发送';
+  }
+
+  /** 语音识别文本进入对话管线：上屏用户气泡 → AI 回复打字机 → 配音播报 */
+  private async handleUserTranscript(text: string): Promise<void> {
+    if (this.isProcessing) {
+      return;
+    }
+    this.isProcessing = true;
+    this.stage = '语音识别';
+    this.stageDetail = '识别完成，正在生成回复';
+    this.appendMessage('主人', text, 'user', '');
+    try {
+      const reply: PetAiReply = await PetConversationService.chatWithTranscript(
+        this.pet, text, getContext(this) as common.UIAbilityContext);
+      await this.typewriterReply(reply);
+    } finally {
+      this.isProcessing = false;
+    }
   }
 
   private onHoldStart(): void {
@@ -93,20 +216,22 @@ struct ChatPage {
   }
 
   private async processVoice(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const result: VoiceSessionResult = await this.voiceService.processRelease(this.pet, '', (stage: VoiceStage, detail: string): void => {
       this.stage = stage;
       this.stageDetail = detail;
-    });
+    }, context);
 
     this.isProcessing = false;
     this.holdButtonText = '按住说话';
 
     if (!result.success) {
-      this.appendMessage('宠物', result.detail, 'voice-fail');
+      this.appendMessage('宠物', result.detail, 'voice-fail', 'local');
       return;
     }
 
-    this.appendDialogue(result.transcript, result.reply);
+    this.appendMessage('主人', result.transcript, 'user', '');
+    this.appendMessage('宠物', result.reply, 'pet', 'ai');
     this.stageDetail = `配音：${result.voiceRole}·${result.voiceOutput}`;
   }
 
@@ -114,11 +239,11 @@ struct ChatPage {
   private MessageBubble(message: ChatMessage) {
     Row() {
       if (message.role === '宠物') {
-        Text('宠物')
+        Text(message.source === 'ai' ? 'AI' : '本地')
           .fontSize(11)
-          .fontColor('#8FD9EF')
+          .fontColor(message.source === 'ai' ? '#7CE7B0' : '#8FD9EF')
           .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-          .backgroundColor('rgba(8, 148, 189, 0.2)')
+          .backgroundColor(message.source === 'ai' ? 'rgba(60, 180, 120, 0.2)' : 'rgba(8, 148, 189, 0.2)')
           .borderRadius(10)
           .margin({ right: 8 });
       }
@@ -183,6 +308,10 @@ struct ChatPage {
           ForEach(this.messages, (message: ChatMessage) => {
             this.MessageBubble(message);
           }, (message: ChatMessage) => message.id);
+
+          if (this.typingContent.length > 0) {
+            this.MessageBubble(this.typingBubble());
+          }
         }
         .width('100%')
         .justifyContent(FlexAlign.Start)
@@ -193,7 +322,35 @@ struct ChatPage {
       .width('100%');
 
       Column({ space: 10 }) {
+        if (this.listeningText.length > 0) {
+          Text(`正在识别：${this.listeningText}`)
+            .width('100%')
+            .fontSize(12)
+            .fontColor('rgba(255,255,255,0.6)');
+        }
+
         Row({ space: 8 }) {
+          // 「唤醒AI」宠物头像按钮：监听中显示红色脉冲态，再次点击取消
+          Image(this.pet.image)
+            .width(44)
+            .height(44)
+            .borderRadius(22)
+            .objectFit(ImageFit.Cover)
+            .border({
+              width: 2,
+              color: this.isListening ? '#FF5A5A' : 'rgba(255,255,255,0.3)'
+            })
+            .scale({ x: this.isListening ? 1.12 : 1, y: this.isListening ? 1.12 : 1 })
+            .animation({
+              duration: 700,
+              curve: Curve.EaseInOut,
+              iterations: this.isListening ? -1 : 1,
+              playMode: this.isListening ? PlayMode.Alternate : PlayMode.Normal
+            })
+            .onClick(() => {
+              this.onAvatarClick();
+            });
+
           TextInput({ placeholder: '输入消息', text: this.inputText })
             .layoutWeight(1)
             .height(44)
