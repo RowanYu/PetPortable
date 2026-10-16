@@ -107,12 +107,17 @@ struct ChatPage {
     const textVoiceResult: PetVoiceSynthesisResult = this.cuteVoiceService.synthesizeSpeech(this.pet, replyText);
     this.stage = '语音播报';
     if (PetKokoroTtsService.getInstance().isDogVoiceEnabled(this.pet)) {
-      const played: boolean = await PetKokoroTtsService.getInstance()
-        .speak(this.pet, textVoiceResult.voiceText, getContext(this) as common.UIAbilityContext);
-      if (played) {
-        this.stageDetail = `配音：${textVoiceResult.voiceRole}·少年音`;
-        return;
-      }
+      // fire-and-forget：TTS 合成/播放不阻塞 isProcessing（连续聊天下一轮聆听不被拖住）；
+      // 失败时异步回退展示现状文案
+      this.stageDetail = `配音：${textVoiceResult.voiceRole}·少年音`;
+      PetKokoroTtsService.getInstance()
+        .speak(this.pet, textVoiceResult.voiceText, getContext(this) as common.UIAbilityContext)
+        .then((played: boolean): void => {
+          if (!played) {
+            this.stageDetail = `配音：${textVoiceResult.voiceRole}·${textVoiceResult.voiceText}`;
+          }
+        });
+      return;
     }
     this.stageDetail = `配音：${textVoiceResult.voiceRole}·${textVoiceResult.voiceText}`;
   }

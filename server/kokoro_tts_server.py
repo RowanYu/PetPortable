@@ -39,15 +39,21 @@ def get_pipeline():
     return _pipeline
 
 
+def merge_audio_chunks(chunks: list) -> np.ndarray:
+    """拼接各分段音频；跳过 audio=None 的分段（标点/换行段可能产出 None）。"""
+    valid = [np.asarray(c, dtype=np.float32) for c in chunks if c is not None]
+    if not valid:
+        raise RuntimeError('合成结果为空')
+    return valid[0] if len(valid) == 1 else np.concatenate(valid)
+
+
 def synthesize(text: str, voice: str) -> bytes:
     """合成整段文本为 WAV 字节：Kokoro 按句分段产出，必须拼接全部音频。"""
     pipeline = get_pipeline()
-    chunks: list[np.ndarray] = []
+    chunks: list = []
     for _gs, _ps, audio in pipeline(text, voice=voice, speed=1.0):
-        chunks.append(np.asarray(audio, dtype=np.float32))
-    if not chunks:
-        raise RuntimeError('合成结果为空')
-    merged = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
+        chunks.append(audio)
+    merged = merge_audio_chunks(chunks)
     buf = io.BytesIO()
     sf.write(buf, merged, SAMPLE_RATE, format='WAV')
     return buf.getvalue()

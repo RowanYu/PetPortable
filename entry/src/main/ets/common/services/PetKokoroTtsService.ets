@@ -26,6 +26,8 @@ export class PetKokoroTtsService {
   private openFd: number = -1;
   private playStartResolver: ((value: boolean) => void) | undefined = undefined;
   private playStartTimer: number = -1;
+  private speakSeq: number = 0;   // 会话代次：stop/新 speak 递增，使 in-flight 会话失效
+  private fdSession: number = -1; // 当前 openFd 所属会话代次
 
   private constructor() {
   }
@@ -63,18 +65,30 @@ export class PetKokoroTtsService {
     if (!this.isDogVoiceEnabled(pet) || normalizedText.length === 0) {
       return false;
     }
+    this.speakSeq += 1;
+    const session: number = this.speakSeq;
+    // 立即中断旧播放（旧 fd 在 await reset 后安全回收，避免 stopped 回调误杀新 fd）
+    const player: media.AVPlayer = await this.ensurePlayer();
+    await this.stopCurrentPlayback(player);
     try {
       const wavData: ArrayBuffer = await this.downloadWav(normalizedText);
+      if (session !== this.speakSeq) {
+        return false;
+      }
       const cachePath: string = await this.writeCacheFile(wavData, context);
-      return await this.playCacheFile(cachePath);
+      if (session !== this.speakSeq) {
+        return false;
+      }
+      return await this.playCacheFile(cachePath, session);
     } catch (e) {
       console.warn(`${TAG} speak failed: ${(e as Error).message}`);
       return false;
     }
   }
 
-  /** 停止当前播放并复位（新回复开始前 / 页面退出时调用） */
+  /** 停止当前播放并复位（新回复开始前 / 页面退出时调用），并使 in-flight 会话失效 */
   stop(): void {
+    this.speakSeq += 1;
     this.isPlaying = false;
     this.resolvePlayStart(false);
     const player: media.AVPlayer | undefined = this.player;
@@ -82,7 +96,8 @@ export class PetKokoroTtsService {
       return;
     }
     try {
-      if (player.state === 'playing' || player.state === 'paused') {
+      if (player.state === 'playing' || player.state === 'paused' || player.state === 'prepared'
+        || player.state === 'initialized') {
         player.stop();
       }
     } catch (e) {
@@ -132,13 +147,17 @@ export class PetKokoroTtsService {
     return cachePath;
   }
 
-  private async playCacheFile(cachePath: string): Promise<boolean> {
+  private async playCacheFile(cachePath: string, session: number): Promise<boolean> {
     const player: media.AVPlayer = await this.ensurePlayer();
-    this.stopCurrentPlayback(player);
-
-    this.openFd = fs.openSync(cachePath, fs.OpenMode.READ_ONLY).fd;
-    const stat = fs.statSync(this.openFd);
-    player.fdSrc = { fd: this.openFd, offset: 0, length: stat.size };
+    try {
+      this.fdSession = session;
+      this.openFd = fs.openSync(cachePath, fs.OpenMode.READ_ONLY).fd;
+      const stat = fs.statSync(this.openFd);
+      player.fdSrc = { fd: this.openFd, offset: 0, length: stat.size };
+    } catch (e) {
+      this.closeOpenFd();
+      throw e as Error;
+    }
 
     return new Promise<boolean>((resolve: (value: boolean) => void) => {
       this.playStartResolver = resolve;
@@ -158,16 +177,17 @@ export class PetKokoroTtsService {
     return this.player;
   }
 
-  private stopCurrentPlayback(player: media.AVPlayer): void {
+  private async stopCurrentPlayback(player: media.AVPlayer): Promise<void> {
     this.isPlaying = false;
     this.resolvePlayStart(false);
-    if (player.state !== 'idle') {
+    const state: string = player.state;
+    if (state !== 'idle') {
       try {
-        if (player.state === 'playing' || player.state === 'paused' || player.state === 'prepared'
-          || player.state === 'initialized') {
-          player.stop();
+        if (state === 'playing' || state === 'paused' || state === 'prepared' || state === 'initialized') {
+          await player.stop();
         }
-        player.reset();
+        // 必须等 reset 完成再回收 fd / 设置新 fdSrc（参照 PetActionSoundService 的惯例）
+        await player.reset();
       } catch (e) {
         console.warn(`${TAG} stopCurrentPlayback failed: ${(e as Error).message}`);
       }
@@ -194,9 +214,16 @@ export class PetKokoroTtsService {
           console.error(`${TAG} play failed: ${(e as Error).message}`);
           this.resolvePlayStart(false);
         }
-      } else if (state === 'completed' || state === 'stopped' || state === 'error') {
+      } else if (state === 'completed' || state === 'error') {
         this.isPlaying = false;
         this.closeOpenFd();
+      } else if (state === 'stopped') {
+        this.isPlaying = false;
+        // 仅当 fd 已成孤儿（会话被取消且无新播放接管）时回收，
+        // 避免旧播放的 stopped 回调误关新播放的 fd
+        if (this.fdSession !== this.speakSeq) {
+          this.closeOpenFd();
+        }
       }
     });
 
