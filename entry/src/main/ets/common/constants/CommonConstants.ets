@@ -57,6 +57,19 @@ export class CommonConstants {
   static readonly RELAY_ENDPOINT: string = `http://${CommonConstants.RELAY_SERVER_HOST}:${CommonConstants.RELAY_SERVER_PORT}/swap`;
 
   /**
+   * Kokoro TTS 服务配置（PC 端 kokoro_tts_server.py 监听的 HTTP 端点）
+   * 复用 ENV_SERVER_HOST 单一来源；端口 6792 与 6790/6791 分离。
+   * 若部署到云服务器：改 KOKORO_SERVER_HOST 一处，并把该 IP/域名
+   * 加入 entry/src/main/resources/base/profile/network_config.json 明文白名单。
+   */
+  static readonly KOKORO_SERVER_HOST: string = CommonConstants.ENV_SERVER_HOST;
+  static readonly KOKORO_SERVER_PORT: number = 6792;
+  static readonly KOKORO_TTS_ENDPOINT: string = `http://${CommonConstants.KOKORO_SERVER_HOST}:${CommonConstants.KOKORO_SERVER_PORT}/tts`;
+  static readonly KOKORO_VOICE_DOG: string = 'zm_yunxia';  // Kokoro 中文少年音（狗宠物）
+  static readonly KOKORO_TIMEOUT_MS: number = 15000;
+  static readonly KOKORO_CONNECT_TIMEOUT_MS: number = 5000;
+
+  /**
    * 环境阈值
    */
   static readonly TEMP_TOO_HIGH: number = 32;   // 温度过高阈值 (°C)
