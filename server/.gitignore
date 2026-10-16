@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# 虚拟环境
+.venv*/
+
+# 运行与验证产物
+*.wav
+.pip-*.log
+.import-check.*
+.server.log
+.server.err.log
+.pytest-out.log
