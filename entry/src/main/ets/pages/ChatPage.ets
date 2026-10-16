@@ -10,6 +10,7 @@ import { PetPersistenceService } from '../common/services/PetPersistenceService'
 import { PetSpeechRecognizerService, SpeechSessionCallbacks } from '../common/services/PetSpeechRecognizerService';
 import { PetChatGesturePolicy } from '../common/services/PetChatGesturePolicy';
 import { PetContinuousChatService, ContinuousTurnCallbacks } from '../common/services/PetContinuousChatService';
+import { PetKokoroTtsService } from '../common/services/PetKokoroTtsService';
 
 const TYPEWRITER_INTERVAL_MS: number = 24;
 
@@ -75,9 +76,11 @@ struct ChatPage {
    * 打字机上屏：AI 回复逐字追加（豆包式流式观感）；本地兜底直接上屏保证「快」
    */
   private async typewriterReply(reply: PetAiReply): Promise<void> {
+    // 新回复开始前中断上一段 Kokoro 播放，避免双声
+    PetKokoroTtsService.getInstance().stop();
     if (reply.source !== 'ai') {
       this.appendMessage('宠物', reply.content, 'pet', 'local');
-      this.speakReply(reply.content);
+      await this.speakReply(reply.content);
       return;
     }
 
@@ -96,13 +99,21 @@ struct ChatPage {
     });
     this.typingContent = '';
     this.appendMessage('宠物', full, 'pet', 'ai');
-    this.speakReply(full);
+    await this.speakReply(full);
   }
 
-  /** 可爱配音播报 */
-  private speakReply(replyText: string): void {
+  /** 可爱配音播报：狗宠物走 Kokoro 少年音，失败/非狗回退现状（仅文案，不发声） */
+  private async speakReply(replyText: string): Promise<void> {
     const textVoiceResult: PetVoiceSynthesisResult = this.cuteVoiceService.synthesizeSpeech(this.pet, replyText);
     this.stage = '语音播报';
+    if (PetKokoroTtsService.getInstance().isDogVoiceEnabled(this.pet)) {
+      const played: boolean = await PetKokoroTtsService.getInstance()
+        .speak(this.pet, textVoiceResult.voiceText, getContext(this) as common.UIAbilityContext);
+      if (played) {
+        this.stageDetail = `配音：${textVoiceResult.voiceRole}·少年音`;
+        return;
+      }
+    }
     this.stageDetail = `配音：${textVoiceResult.voiceRole}·${textVoiceResult.voiceText}`;
   }
 
@@ -452,6 +463,7 @@ struct ChatPage {
       this.listeningText = '';
     }
     this.clearHoldFinalTimer();
+    PetKokoroTtsService.getInstance().stop();
   }
 
   @Builder
