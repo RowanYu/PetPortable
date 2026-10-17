@@ -1,5 +1,6 @@
 import { router } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
+import { HomeVoiceChatButton } from '../common/components/HomeVoiceChatButton';
 import { PetActionMenu } from '../common/components/PetActionMenu';
 import { PetSprite } from '../common/components/PetSprite';
 import { PetStatusBar } from '../common/components/PetStatusBar';
@@ -961,6 +962,8 @@ struct Index {
         }
 
         PetSprite({ pet: this.pet });
+
+        HomeVoiceChatButton({ pet: this.pet });
 
         PetActionMenu({ pet: this.pet })
           .zIndex(20);
