@@ -317,6 +317,16 @@ export struct HomeVoiceChatButton {
     PetKokoroTtsService.getInstance().stop();
   }
 
+  /** pushUrl 跳转聊天页等场景首页不销毁，必须主动停会话，避免后台录音与 ChatPage 双开 */
+  onPageHide(): void {
+    if (this.isContinuousMode) {
+      this.exitContinuousChat();
+    }
+    this.clearHoldFinalTimer();
+    this.speechService.stopListening();
+    PetKokoroTtsService.getInstance().stop();
+  }
+
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       if (this.swipeHintVisible || this.holdPartialText.length > 0 ||
